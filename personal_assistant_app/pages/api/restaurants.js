@@ -1,149 +1,105 @@
 // pages/api/restaurants.js
+// מחזיר רשימת מסעדות מתוך OpenStreetMap (Nominatim + Overpass), ללא צורך ב-API key.
+// שימוש הוגן: הוסיפי אימייל אמיתי בכותרת User-Agent כנדרש ע"י Nominatim.
+
+const NOMINATIM = "https://nominatim.openstreetmap.org/search";
+const OVERPASS = "https://overpass-api.de/api/interpreter";
+
+// בונה שורת כתובת מטאגים של OSM
+function buildAddress(tags = {}) {
+  const parts = [
+    tags["addr:street"],
+    tags["addr:housenumber"],
+    tags["addr:city"],
+    tags["addr:postcode"]
+  ].filter(Boolean);
+  return parts.join(" ") || tags["addr:full"] || "";
+}
+
 export default async function handler(req, res) {
   try {
-    const GOOGLE_KEY = process.env.GOOGLE_MAPS_API_KEY;
-    const YELP_KEY = process.env.YELP_API_KEY; // אופציונלי
-    if (!GOOGLE_KEY) {
-      return res.status(500).json({ error: 'Missing GOOGLE_MAPS_API_KEY' });
-    }
-
     const {
-      location = 'תל אביב',
-      cuisine = '',
-      requestedTime
+      location = "תל אביב",
+      cuisine = "",       // לדוגמה: "italian" או "אסייתי"
+      radius = "3000",    // מטרים סביב מרכז העיר
+      max = "5",
+      lang = "he"
     } = req.query;
 
-    const when = requestedTime ? new Date(requestedTime) : new Date();
+    // 1) גיאוקודינג של העיר ל-lat/lon
+    const geoUrl =
+      `${NOMINATIM}?q=${encodeURIComponent(location)}` +
+      `&format=json&limit=1&accept-language=${encodeURIComponent(lang)}`;
 
-    // --- Google Places Text Search ---
-    const gParams = new URLSearchParams({
-      query: `restaurants ${cuisine || ''} ${location}`,
-      key: GOOGLE_KEY,
-      type: 'restaurant',
-      language: 'he',
-      region: 'il',
-    });
-    const gRes = await fetch(
-      `https://maps.googleapis.com/maps/api/place/textsearch/json?${gParams.toString()}`
-    );
-    const gJson = await gRes.json();
-    const googleRestaurants = (gJson.results || []).map(p => ({
-      name: p.name,
-      address: p.formatted_address,
-      rating: p.rating,
-      price_level: p.price_level,
-      place_id: p.place_id,
-      source: 'google',
-      lat: p.geometry?.location?.lat,
-      lng: p.geometry?.location?.lng,
-    }));
-
-    // --- Yelp (אופציונלי; בישראל לפעמים דל) ---
-    let yelpRestaurants = [];
-    if (YELP_KEY) {
-      const yParams = new URLSearchParams({
-        location,
-        categories: cuisine ? `restaurants,${cuisine}` : 'restaurants',
-        limit: '20',
-        locale: 'he_IL'
-      });
-      const yRes = await fetch(
-        `https://api.yelp.com/v3/businesses/search?${yParams.toString()}`,
-        { headers: { Authorization: `Bearer ${YELP_KEY}` } }
-      );
-      const yJson = await yRes.json();
-      yelpRestaurants = (yJson.businesses || []).map(b => ({
-        name: b.name,
-        address: (b.location?.display_address || []).join(', '),
-        rating: b.rating,
-        price: b.price,
-        yelp_id: b.id,
-        source: 'yelp',
-        lat: b.coordinates?.latitude,
-        lng: b.coordinates?.longitude,
-        categories: (b.categories || []).map(c => c.title),
-        phone: b.phone,
-        image_url: b.image_url,
-      }));
-    }
-
-    // --- merge & dedupe ---
-    const all = [...googleRestaurants, ...yelpRestaurants];
-    const uniq = {};
-    for (const r of all) {
-      const key = (r.name + '|' + (r.address || '')).toLowerCase();
-      if (!uniq[key]) uniq[key] = r;
-    }
-    const unique = Object.values(uniq);
-
-    // --- זמינות משוערת (סטטיסטית) ---
-    const period = (d) => {
-      const dow = d.getDay(); // 0=Sunday
-      const hour = d.getHours();
-      if (dow === 5 || dow === 6) { // שישי/שבת
-        if (hour >= 18 && hour <= 23) return 'weekend_evening';
-      } else {
-        if (hour >= 18 && hour <= 22) return 'weekday_evening';
-        if (hour >= 11 && hour <= 15) return 'lunch_time';
+    const geoRes = await fetch(geoUrl, {
+      headers: {
+        // החליפי במייל שלך בהתאם לכללי השימוש של Nominatim
+        "User-Agent": "horizon-personal-assistant/1.0 (contact: ofekp999@gmail.com)"
       }
-      return 'other';
-    };
-    const predict = (r, d) => {
-      const p = period(d);
-      const baseBusy =
-        p === 'weekend_evening' ? 0.9 :
-        p === 'weekday_evening' ? 0.7 :
-        p === 'lunch_time' ? 0.6 : 0.5;
-      let availability = 1 - baseBusy;
-      const rating = r.rating ?? 3.5;
-      if (rating > 4.5) availability *= 0.8;
-      else if (rating < 3.5) availability *= 1.2;
-      availability = Math.min(1, Math.max(0, availability));
-      const rec =
-        availability > 0.7 ? 'זמינות טובה - מומלץ להזמין' :
-        availability > 0.4 ? 'זמינות בינונית - כדאי להזמין מראש' :
-        'צפוי להיות עמוס - מומלץ לבחור זמן אחר';
-
-      const earlier = new Date(d.getTime() - 60 * 60 * 1000);
-      const later = new Date(d.getTime() + 2 * 60 * 60 * 1000);
-      const pad = n => String(n).padStart(2, '0');
-
-      return {
-        availability_score: availability,
-        confidence: 0.6,
-        recommendation: rec,
-        alternative_times: [
-          `${pad(earlier.getHours())}:${pad(earlier.getMinutes())} (מוקדם יותר)`,
-          `${pad(later.getHours())}:${pad(later.getMinutes())} (מאוחר יותר)`
-        ]
-      };
-    };
-
-    const enriched = unique.slice(0, 20).map(r => {
-      const pred = predict(r, when);
-      const base = r.rating ? r.rating / 5 : 0.6;
-      const matchScore = Number((0.6 * base + 0.4).toFixed(2));
-      return {
-        ...r,
-        availability_prediction: pred,
-        match_score: matchScore,
-        maps_url: r.lat && r.lng
-          ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.name)}&query_place_id=${r.place_id || ''}`
-          : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${r.name} ${r.address || ''}`)}`
-      };
-    }).sort((a, b) =>
-      (b.match_score * b.availability_prediction.availability_score) -
-      (a.match_score * a.availability_prediction.availability_score)
-    );
-
-    return res.status(200).json({
-      recommendations: enriched.slice(0, 10),
-      requestedTime: when.toISOString(),
-      location,
-      source: { google: googleRestaurants.length, yelp: yelpRestaurants.length }
     });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Failed to fetch restaurants' });
+    const geoData = await geoRes.json();
+    if (!Array.isArray(geoData) || geoData.length === 0) {
+      return res.status(404).json({ error: "location_not_found" });
+    }
+    const { lat, lon } = geoData[0];
+
+    // 2) שאילתת Overpass: מסעדות סביב הנ"צ, עם סינון אופציונלי לפי cuisine
+    const cuisineFilter = cuisine
+      ? `["cuisine"~"${cuisine.replace(/"/g, '\\"')}",i]`
+      : "";
+    const q = `
+      [out:json][timeout:25];
+      (
+        node(around:${Number(radius)},${lat},${lon})["amenity"="restaurant"]${cuisineFilter};
+        way(around:${Number(radius)},${lat},${lon})["amenity"="restaurant"]${cuisineFilter};
+      );
+      out center tags ${Number(max) * 4};
+    `;
+
+    const ovRes = await fetch(OVERPASS, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+      },
+      body: new URLSearchParams({ data: q })
+    });
+    if (!ovRes.ok) {
+      const t = await ovRes.text();
+      return res.status(ovRes.status).json({ error: "overpass_error", details: t.slice(0, 500) });
+    }
+    const ovJson = await ovRes.json();
+    const elements = Array.isArray(ovJson.elements) ? ovJson.elements : [];
+
+    // 3) עיבוד תוצאות
+    const items = elements
+      .map((el) => {
+        const tags = el.tags || {};
+        const name = tags.name || "";
+        if (!name) return null;
+
+        const lat2 = el.lat ?? el.center?.lat;
+        const lon2 = el.lon ?? el.center?.lon;
+
+        return {
+          name,
+          address: buildAddress(tags),
+          cuisine: tags.cuisine || null,
+          lat: lat2,
+          lon: lon2,
+          osmType: el.type,
+          osmId: el.id,
+          mapsUrl: lat2 && lon2 ? `https://www.openstreetmap.org/?mlat=${lat2}&mlon=${lon2}#map=18/${lat2}/${lon2}` : null
+        };
+      })
+      .filter(Boolean)
+      // סינון כפילויות לפי שם
+      .reduce((acc, r) => {
+        if (!acc.some((x) => x.name === r.name)) acc.push(r);
+        return acc;
+      }, [])
+      .slice(0, Number(max));
+
+    return res.status(200).json({ query: { location, cuisine }, restaurants: items });
+  } catch (e) {
+    return res.status(500).json({ error: "server_error", message: String(e) });
   }
-}
