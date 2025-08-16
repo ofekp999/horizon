@@ -1,3 +1,7 @@
+import { showRestaurantSuggestions } from '../lib/showRestaurants'; // או '@/lib/showRestaurants' אם יש לך alias
+const addBotMessage = (text) =>
+  setMessages((msgs) => [...msgs, { role: 'assistant', text }]);
+
 import { useState, useRef, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { showRestaurantSuggestions } from '../lib/showRestaurants';
