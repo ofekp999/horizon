@@ -1,11 +1,8 @@
-import { showRestaurantSuggestions } from '../api/showRestaurants'; // או '@/lib/showRestaurants' אם יש לך alias
-const addBotMessage = (text) =>
-  setMessages((msgs) => [...msgs, { role: 'assistant', text }]);
-
+// components/ChatDock.js
 import { useState, useRef, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
-// ChatDock: צ'אט אונבורדינג קצר ששומר תשובות ל-Supabase
-// ובסיום מחזיר רשימת מסעדות מה-API הפנימי (/api/restaurants).
+
+// ⚠️ ודאי שהשאלות בטבלת onboarding_questions כוללות keyים רלוונטיים, למשל: "city", "cuisine"
 
 export default function ChatDock() {
   const [open, setOpen] = useState(false);
@@ -16,11 +13,10 @@ export default function ChatDock() {
   const [qIndex, setQIndex] = useState(0);
   const endRef = useRef(null);
 
-  // פונקציית עזר להוספת הודעת בוט לצ'אט
   const addBotMessage = (text) =>
     setMessages((msgs) => [...msgs, { role: 'assistant', text }]);
 
-  // טוענים את שאלות האונבורדינג בעת טעינת הרכיב
+  // טעינת שאלות האונבורדינג
   useEffect(() => {
     const fetchQuestions = async () => {
       const { data, error } = await supabase
@@ -33,7 +29,7 @@ export default function ChatDock() {
         setMessages([
           {
             role: 'assistant',
-            text: 'שגיאה בטעינת שאלות ההיכרות. אנא נסי שוב מאוחר יותר.',
+            text: 'שגיאה בטעינת שאלות ההיכרות. נסי שוב מאוחר יותר.',
           },
         ]);
         return;
@@ -61,7 +57,17 @@ export default function ChatDock() {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // שליחת הודעה (תשובת משתמש)
+  // === קריאה ל-API של המסעדות ===
+  async function getRestaurants({ location = 'תל אביב', cuisine = '' }) {
+    const url =
+      `/api/restaurants?location=${encodeURIComponent(location)}` +
+      `&cuisine=${encodeURIComponent(cuisine)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('API error');
+    return res.json(); // מצופה { restaurants: [...] }
+  }
+
+  // שליחת הודעת משתמש וניהול האונבורדינג
   const sendMessage = async () => {
     if (!input.trim()) return;
 
@@ -69,33 +75,58 @@ export default function ChatDock() {
     setMessages((msgs) => [...msgs, { role: 'user', text: userMessage }]);
     setInput('');
 
-    // באמצע האונבורדינג
+    // עדיין בשאלות האונבורדינג
     if (qIndex < questions.length) {
       const currentKey = questions[qIndex].key;
 
-      // שומרים תשובה במבנה הטעמים
+      // שמירת התשובה לתוך taste
       setTaste((prev) => ({ ...prev, [currentKey]: userMessage }));
 
       const nextIndex = qIndex + 1;
       setQIndex(nextIndex);
 
       if (nextIndex < questions.length) {
-        // שאלה הבאה
         setMessages((msgs) => [
           ...msgs,
           { role: 'assistant', text: questions[nextIndex].question },
         ]);
       } else {
-        // כל השאלות נענו — מפיקים העדפות סופיות ומציגים מסעדות
+        // סוף האונבורדינג — בניית העדפות סופיות
         const finalPrefs = { ...taste, [currentKey]: userMessage };
 
-        // משפט פתיחה קצר לפני הרשימה
         addBotMessage('תודה! סיימנו את ההיכרות. בודקת מסעדות מתאימות...');
 
-        // מביאים מסעדות מה-API ומדפיסים בצ׳אט
-        await showRestaurantSuggestions(finalPrefs, addBotMessage);
+        try {
+          // שימי לב לשמות המפתחות כפי שקיימים אצלך בשאלון/טבלה:
+          // למשל אם שאלת "באיזה עיר?" => key: "city"
+          // ואם "איזה מטבח?" => key: "cuisine"
+          const apiPrefs = {
+            location: finalPrefs.city || finalPrefs.location || 'תל אביב',
+            cuisine: finalPrefs.cuisine || '',
+          };
 
-        // שומרים פרופיל ל-Supabase (כמו שהיה; העמודות אצלך jsonb/מתאימות)
+          const data = await getRestaurants(apiPrefs);
+
+          if (!data.restaurants?.length) {
+            addBotMessage('לא נמצאו מסעדות באזור/סוג שביקשת.');
+          } else {
+            const lines = data.restaurants
+              .map(
+                (r, i) =>
+                  `${i + 1}. ${r.name}${
+                    r.address ? ' — ' + r.address : ''
+                  }${r.mapsUrl ? `\n   ${r.mapsUrl}` : ''}`
+              )
+              .join('\n\n');
+
+            addBotMessage(`הנה מה שמצאתי:\n\n${lines}`);
+          }
+        } catch (e) {
+          console.error(e);
+          addBotMessage('קרתה שגיאה בחיפוש המסעדות. נסי שוב מאוחר יותר.');
+        }
+
+        // שמירת פרופיל לדוגמה (התאימי לעמודות אצלך)
         try {
           await supabase.from('profiles').insert({
             budget_min: finalPrefs.budget_min || null,
@@ -106,13 +137,15 @@ export default function ChatDock() {
             diet: finalPrefs.diet || null,
             access: finalPrefs.access || null,
             companions: finalPrefs.companions || null,
+            city: finalPrefs.city || null,
+            cuisine: finalPrefs.cuisine || null,
           });
         } catch (err) {
           console.error('Failed to save profile:', err);
         }
       }
     } else {
-      // אחרי האונבורדינג – בגרסת ה-MVP אין שיחה חופשית
+      // אחרי האונבורדינג (MVP)
       setMessages((msgs) => [
         ...msgs,
         {
@@ -142,7 +175,7 @@ export default function ChatDock() {
             </button>
           </div>
 
-          {/* אזור ההודעות */}
+          {/* הודעות */}
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {messages.map((m, idx) => (
               <div
@@ -186,3 +219,4 @@ export default function ChatDock() {
     </div>
   );
 }
+
