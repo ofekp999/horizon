@@ -1,4 +1,4 @@
-import { showRestaurantSuggestions } from '../lib/showRestaurants'; // או '@/lib/showRestaurants' אם יש לך alias
+import { showRestaurantSuggestions } from '../api/showRestaurants'; // או '@/lib/showRestaurants' אם יש לך alias
 const addBotMessage = (text) =>
   setMessages((msgs) => [...msgs, { role: 'assistant', text }]);
 
