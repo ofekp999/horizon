@@ -4,10 +4,6 @@ const addBotMessage = (text) =>
 
 import { useState, useRef, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { showRestaurantSuggestions } from '../lib/showRestaurants';
-// אם אצלך מוגדר alias של '@', השתמשי בזה במקום:
-// import { showRestaurantSuggestions } from '@/lib/showRestaurants';
-
 // ChatDock: צ'אט אונבורדינג קצר ששומר תשובות ל-Supabase
 // ובסיום מחזיר רשימת מסעדות מה-API הפנימי (/api/restaurants).
 
